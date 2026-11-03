@@ -28,8 +28,11 @@ src/open_duck_mjlab/
     xmls/
       open_duck_mini_v4.xml           # RL-ready Open Duck v4 model
       scene_flat_terrain_v4.xml       # Standalone MuJoCo sanity-check scene
-      assets_v3/                      # Copy STL files here
+
+xmls/assets_v3/                       # Existing Open Duck STL assets
 ```
+
+The loader first looks for package-local `assets_v3/*.STL`; if they are not present it automatically falls back to the existing repository-level `xmls/assets_v3/` directory.
 
 ## Robot/action convention
 
@@ -110,28 +113,7 @@ Check the GPU:
 nvidia-smi
 ```
 
-## 2. Copy the STL assets
-
-This repository was initialized through GitHub's text-file API, so binary STL files were not copied automatically.
-
-If the original repository is next to this repository:
-
-```bash
-cp ../open_duck_mini_v2/xmls/assets_v3/*.STL \
-  src/open_duck_mjlab/open_duck/xmls/assets_v3/
-```
-
-Or clone the source repository and copy them:
-
-```bash
-git clone https://github.com/tranphukhang/open_duck_mini_v2.git /tmp/open_duck_mini_v2
-cp /tmp/open_duck_mini_v2/xmls/assets_v3/*.STL \
-  src/open_duck_mjlab/open_duck/xmls/assets_v3/
-```
-
-Then commit the assets normally with git.
-
-## 3. Install the package
+## 2. Install the package
 
 Using uv:
 
@@ -152,7 +134,7 @@ Verify imports:
 python -c "import mjlab; import open_duck_mjlab; print('MJLab/OpenDuck import OK')"
 ```
 
-## 4. Standalone MuJoCo sanity check
+## 3. Standalone MuJoCo sanity check
 
 Before debugging RL, verify that the MJCF itself compiles:
 
@@ -176,7 +158,7 @@ Expected actuator count:
 nu = 10
 ```
 
-## 5. MJLab zero-action smoke test
+## 4. MJLab zero-action smoke test
 
 Run one robot first:
 
@@ -188,7 +170,7 @@ uv run play Mjlab-Velocity-Flat-OpenDuckMiniV2 \
 
 This test is for integration only. The robot may fall under zero actions depending on actuator tuning; the important checks are that the MJCF compiles, the task registers, observations are finite, and the 10 actuator dimensions are correct.
 
-## 6. Short PPO smoke train
+## 5. Short PPO smoke train
 
 Do not start with thousands of environments immediately.
 
