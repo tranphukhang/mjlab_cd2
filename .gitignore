@@ -1,0 +1,13 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.env/
+wandb/
+logs/
+runs/
+checkpoints/
+*.pt
+*.onnx
+.DS_Store
+.vscode/
