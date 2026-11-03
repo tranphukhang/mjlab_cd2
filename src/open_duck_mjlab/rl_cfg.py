@@ -8,7 +8,7 @@ from mjlab.rl import (
 
 
 def open_duck_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
-  """Return the initial PPO configuration for MJLab 1.6.0."""
+  """Return the Stage-0 PPO configuration for MJLab 1.6.0."""
   return RslRlOnPolicyRunnerCfg(
     actor=RslRlModelCfg(
       hidden_dims=(512, 256, 128),
@@ -16,7 +16,7 @@ def open_duck_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
       obs_normalization=True,
       distribution_cfg={
         "class_name": "GaussianDistribution",
-        "init_std": 1.0,
+        "init_std": 0.4,
         "std_type": "scalar",
       },
     ),
@@ -40,9 +40,9 @@ def open_duck_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
       max_grad_norm=1.0,
     ),
     experiment_name="open_duck_velocity",
-    run_name="baseline_flat",
+    run_name="stage0_walk",
     wandb_project="mjlab_open_duck",
-    save_interval=250,
+    save_interval=100,
     num_steps_per_env=24,
-    max_iterations=10_000,
+    max_iterations=1_000,
   )
