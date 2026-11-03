@@ -1,0 +1,179 @@
+<?xml version="1.0"?>
+
+<mujoco model="open_duck_mini_v3">
+
+    <option timestep="0.0005" integrator="implicitfast" solver="Newton" cone="elliptic" tolerance="1e-10">
+        <flag nativeccd="disable"/>
+    </option>
+
+    <!-- Auto inertia -->
+    <compiler angle="degree" meshdir="assets_v3" inertiafromgeom="auto" inertiagrouprange="2 2"/>
+
+    <default>
+        <default class="open_duck_mini_v3">
+            <joint frictionloss="0.1" armature="0.005"/>
+
+            <default class="visual">
+                <geom type="mesh" contype="0" conaffinity="0" group="2"/>
+            </default>
+
+            <default class="collision">
+                <geom group="3"/>
+            </default>
+        </default>
+
+        <!-- Additional joints_properties.xml -->
+        <default class="sts3215">
+            <geom contype="0" conaffinity="0"/>
+
+            <joint damping="0.56" frictionloss="0.068" armature="0.027"/>
+
+            <motor ctrlrange="-3.23 3.23"/>
+        </default>
+
+        <default class="backlash">
+            <!-- +/- 0.5° of backlash -->
+            <joint damping="0.01" frictionloss="0" armature="0.01" limited="true"
+            range="-0.5 0.5"/>
+        </default>
+    </default>
+
+    <sensor>
+        <!-- Add sensors (IMU, contact switches) -->
+    </sensor>
+
+    <asset>
+        <mesh file="base_link.STL" inertia="exact"/>
+        <mesh file="L1_hip_yaw.STL" inertia="exact"/>
+        <mesh file="L2_hip_roll.STL" inertia="exact"/>
+        <mesh file="L3_hip_pitch.STL" inertia="exact"/>
+        <mesh file="L4_knee.STL" inertia="exact"/>
+        <mesh file="L5_ankle.STL" inertia="convex"/>
+
+        <mesh file="R1_hip_yaw.STL" inertia="exact"/>
+        <mesh file="R2_hip_roll.STL" inertia="exact"/>
+        <mesh file="R3_hip_pitch.STL" inertia="exact"/>
+        <mesh file="R4_knee.STL" inertia="exact"/>
+        <mesh file="R5_ankle.STL" inertia="convex"/>
+    </asset>
+
+    <actuator>
+        <motor class="sts3215" name="L_hip_yaw"    joint="L_hip_yaw"/>
+        <motor class="sts3215" name="L_hip_roll"   joint="L_hip_roll"/>
+        <motor class="sts3215" name="L_hip_pitch"  joint="L_hip_pitch"/>
+        <motor class="sts3215" name="L_knee"       joint="L_knee"/>
+        <motor class="sts3215" name="L_ankle"      joint="L_ankle"/>
+
+        <motor class="sts3215" name="R_hip_yaw"    joint="R_hip_yaw"/>
+        <motor class="sts3215" name="R_hip_roll"   joint="R_hip_roll"/>
+        <motor class="sts3215" name="R_hip_pitch"  joint="R_hip_pitch"/>
+        <motor class="sts3215" name="R_knee"       joint="R_knee"/>
+        <motor class="sts3215" name="R_ankle"      joint="R_ankle"/>
+    </actuator>
+
+    <worldbody>
+        <body name="base_link" pos="0 0 0.28" euler="0 0 0" childclass="open_duck_mini_v3">
+            <freejoint name="floating_base"/>
+
+            <site name="base" pos="0 0 -0.08286" euler="0 0 0"/>
+            <site name="L0" pos="0 0.035 -0.08286" euler="0 0 90"/>
+            <site name="R0" pos="0 -0.035 -0.08286" euler="0 0 -90"/>
+
+            <!-- IMU sensor -->
+            <site name="imu" pos="0 0 0"/>
+
+            <geom type="mesh" class="visual" mesh="base_link" mass="0.7"/>
+            
+            <!-- Left Leg -->
+            <body name="L1_hip_yaw" pos="0 0.035 -0.08286" euler="0 0 90" childclass="open_duck_mini_v3">
+                <joint name="L_hip_yaw" type="hinge" range="-30 30" axis="0 0 1" class="sts3215"/>
+
+                <site name="L1_hip_yaw" pos="0 0 0"/>
+
+                <geom type="mesh" class="visual" mesh="L1_hip_yaw" mass="0.08"/>
+
+                <body name="L2_hip_roll" pos="0 0.01606 0" euler="90 0 -90" childclass="open_duck_mini_v3">
+                    <joint name="L_hip_roll" type="hinge" range="-25 25"  axis="0 0 1" class="sts3215"/>
+
+                    <site name="L2_hip_roll" pos="0 0 0"/>
+
+                    <geom type="mesh" class="visual" mesh="L2_hip_roll" mass="0.08"/>
+
+                    <body name="L3_hip_pitch" pos="0 0.0557 0" euler="-90 0 0" childclass="open_duck_mini_v3">
+                        <joint name="L_hip_pitch" type="hinge" range="-30 70"  axis="0 0 1" class="sts3215"/>
+
+                        <site name="L3_hip_pitch" pos="0 0 0"/>
+
+                        <geom type="mesh" class="visual" mesh="L3_hip_pitch" mass="0.08"/>
+
+                        <body name="L4_knee" pos="0.07865 0 0" euler="0 0 0" childclass="open_duck_mini_v3">
+                            <joint name="L_knee" type="hinge" range="-90 90"  axis="0 0 1" class="sts3215"/>
+
+                            <site name="L4_knee" pos="0 0 0"/>
+
+                            <geom type="mesh" class="visual" mesh="L4_knee" mass="0.08"/>
+
+                            <body name="L5_ankle" pos="0.07865 0 0" euler="0 0 0" childclass="open_duck_mini_v3">
+                                <joint name="L_ankle" type="hinge" range="-90 90"  axis="0 0 1" class="sts3215"/>
+
+                                <site name="L5_ankle" pos="0 0 0"/>
+
+                                <geom type="mesh" class="visual" mesh="L5_ankle" mass="0.08"/>
+                                <geom type="mesh" class="collision" mesh="L5_ankle"/>
+
+                                <site name="L6" pos="0.0388 0 0"/>
+
+                                <site name="L6_IK" pos="0.0388 0 0" euler="90 -90 0"/>
+                            </body>
+                        </body>
+                    </body>
+                </body>
+            </body>
+
+            <!-- Right Leg -->
+            <body name="R1_hip_yaw" pos="0 -0.035 -0.08286" euler="0 0 -90" childclass="open_duck_mini_v3">
+                <joint name="R_hip_yaw" type="hinge" range="-30 30" axis="0 0 1" class="sts3215"/>
+
+                <site name="R1_hip_yaw" pos="0 0 0"/>
+
+                <geom type="mesh" class="visual" mesh="R1_hip_yaw" mass="0.08"/>
+
+                <body name="R2_hip_roll" pos="0 -0.01606 0" euler="-90 0 90" childclass="open_duck_mini_v3">
+                    <joint name="R_hip_roll" type="hinge" range="-25 25"  axis="0 0 1" class="sts3215"/>
+
+                    <site name="R2_hip_roll" pos="0 0 0"/>
+
+                    <geom type="mesh" class="visual" mesh="R2_hip_roll" mass="0.08"/>
+
+                    <body name="R3_hip_pitch" pos="0 -0.0557 0" euler="90 0 0" childclass="open_duck_mini_v3">
+                        <joint name="R_hip_pitch" type="hinge" range="-70 30"  axis="0 0 1" class="sts3215"/>
+
+                        <site name="R3_hip_pitch" pos="0 0 0"/>
+
+                        <geom type="mesh" class="visual" mesh="R3_hip_pitch" mass="0.08"/>
+
+                        <body name="R4_knee" pos="0.07865 0 0" euler="0 0 0" childclass="open_duck_mini_v3">
+                            <joint name="R_knee" type="hinge" range="-90 90"  axis="0 0 1" class="sts3215"/>
+
+                            <site name="R4_knee" pos="0 0 0"/>
+
+                            <geom type="mesh" class="visual" mesh="R4_knee" mass="0.08"/>
+
+                            <body name="R5_ankle" pos="0.07865 0 0" euler="0 0 0" childclass="open_duck_mini_v3">
+                                <joint name="R_ankle" type="hinge" range="-90 90"  axis="0 0 1" class="sts3215"/>
+
+                                <site name="R5_ankle" pos="0 0 0"/>
+
+                                <geom type="mesh" class="visual" mesh="R5_ankle" mass="0.08"/>
+                                <geom type="mesh" class="collision" mesh="R5_ankle"/>
+
+                                <site name="R6" pos="0.0388 0 0"/>
+                                <site name="R6_IK" pos="0.0388 0 0" euler="-90 -90 0"/>
+                            </body>
+                        </body>
+                    </body>
+                </body>
+            </body>
+        </body>
+    </worldbody>
+</mujoco>
