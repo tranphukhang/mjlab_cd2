@@ -2,7 +2,7 @@
 
 <mujoco model="open_duck_mini_v4">
 
-    <option timestep="0.0005" integrator="implicitfast" solver="Newton" cone="elliptic" tolerance="1e-10">
+    <option timestep="0.005" integrator="implicitfast" solver="Newton" cone="elliptic" tolerance="1e-8">
         <flag nativeccd="disable"/>
     </option>
 
