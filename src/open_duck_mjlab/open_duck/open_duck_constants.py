@@ -103,7 +103,7 @@ FULL_COLLISION = CollisionCfg(
 
 # Keep the position actuators defined in the MJCF (STS3215 baseline model).
 OPEN_DUCK_ARTICULATION = EntityArticulationInfoCfg(
-  actuators=(XmlActuatorCfg(target_names_expr=(".*",)),),
+  actuators=(XmlActuatorCfg(target_names_expr=JOINT_NAMES),),
   soft_joint_pos_limit_factor=0.9,
 )
 
