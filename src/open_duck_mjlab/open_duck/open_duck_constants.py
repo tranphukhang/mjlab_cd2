@@ -5,7 +5,6 @@ from pathlib import Path
 import mujoco
 from mjlab.actuator import XmlActuatorCfg
 from mjlab.entity import EntityArticulationInfoCfg, EntityCfg
-from mjlab.utils.os import update_assets
 from mjlab.utils.spec_config import CollisionCfg
 
 _HERE = Path(__file__).parent
@@ -45,11 +44,22 @@ def _asset_dir() -> Path:
   )
 
 
-def get_assets(meshdir: str) -> dict[str, bytes]:
-  """Collect STL assets referenced by the Open Duck MJCF."""
-  assets: dict[str, bytes] = {}
-  update_assets(assets, _asset_dir(), meshdir)
-  return assets
+def _inject_mesh_assets(spec: mujoco.MjSpec) -> None:
+  """Load the mesh bytes required by the MJCF into ``spec.assets``.
+
+  MJLab 1.6.0 does not provide the newer ``mjlab.utils.os.update_assets`` helper,
+  so the referenced mesh files are injected directly using their MJCF file names.
+  """
+  asset_dir = _asset_dir()
+  for mesh in spec.meshes:
+    if not mesh.file:
+      continue
+    mesh_path = asset_dir / Path(mesh.file).name
+    if not mesh_path.exists():
+      raise FileNotFoundError(
+        f"Mesh referenced by MJCF was not found: {mesh.file} (looked in {asset_dir})"
+      )
+    spec.assets[mesh.file] = mesh_path.read_bytes()
 
 
 def get_spec() -> mujoco.MjSpec:
@@ -57,7 +67,7 @@ def get_spec() -> mujoco.MjSpec:
   if not OPEN_DUCK_XML.exists():
     raise FileNotFoundError(f"Open Duck MJCF not found: {OPEN_DUCK_XML}")
   spec = mujoco.MjSpec.from_file(str(OPEN_DUCK_XML))
-  spec.assets = get_assets(spec.meshdir)
+  _inject_mesh_assets(spec)
   return spec
 
 
@@ -83,6 +93,8 @@ INIT_STATE = EntityCfg.InitialStateCfg(
 # The current v4 model only has explicit collision geometry on the feet.
 FULL_COLLISION = CollisionCfg(
   geom_names_expr=FOOT_GEOMS,
+  contype=1,
+  conaffinity=1,
   condim=3,
   priority=1,
   friction=(0.8,),
