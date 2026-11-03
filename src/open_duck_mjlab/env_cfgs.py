@@ -154,11 +154,12 @@ def open_duck_flat_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   command.ranges.lin_vel_x = (-0.20, 0.25)
   command.ranges.lin_vel_y = (0.0, 0.0)
   command.ranges.ang_vel_z = (0.0, 0.0)
+  command.ranges.heading = None
   cfg.curriculum.pop("command_vel", None)
 
-  # Preserve the v4 contact/actuator simulation step and run the policy at 50 Hz.
-  cfg.sim.mujoco.timestep = 0.0005
-  cfg.decimation = 40
+  # 500 Hz physics and 50 Hz policy/control updates.
+  cfg.sim.mujoco.timestep = 0.002
+  cfg.decimation = 10
   cfg.episode_length_s = 20.0
 
   cfg.viewer.body_name = BASE_BODY
