@@ -9,7 +9,10 @@ from mjlab.utils.os import update_assets
 from mjlab.utils.spec_config import CollisionCfg
 
 _HERE = Path(__file__).parent
+_REPO_ROOT = _HERE.parents[2]
 OPEN_DUCK_XML = _HERE / "xmls" / "open_duck_mini_v4.xml"
+_PACKAGE_ASSETS = OPEN_DUCK_XML.parent / "assets_v3"
+_REPO_ASSETS = _REPO_ROOT / "xmls" / "assets_v3"
 
 
 JOINT_NAMES = (
@@ -30,10 +33,22 @@ FOOT_GEOMS = ("left_foot_collision", "right_foot_collision")
 BASE_BODY = "base_link"
 
 
+def _asset_dir() -> Path:
+  """Return the STL directory, preferring package-local assets when present."""
+  if _PACKAGE_ASSETS.exists() and any(_PACKAGE_ASSETS.glob("*.STL")):
+    return _PACKAGE_ASSETS
+  if _REPO_ASSETS.exists() and any(_REPO_ASSETS.glob("*.STL")):
+    return _REPO_ASSETS
+  raise FileNotFoundError(
+    "Open Duck STL assets not found. Expected them in either "
+    f"{_PACKAGE_ASSETS} or {_REPO_ASSETS}."
+  )
+
+
 def get_assets(meshdir: str) -> dict[str, bytes]:
   """Collect STL assets referenced by the Open Duck MJCF."""
   assets: dict[str, bytes] = {}
-  update_assets(assets, OPEN_DUCK_XML.parent / "assets_v3", meshdir)
+  update_assets(assets, _asset_dir(), meshdir)
   return assets
 
 
