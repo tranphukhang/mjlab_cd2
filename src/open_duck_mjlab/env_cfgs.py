@@ -4,6 +4,8 @@ import math
 
 from mjlab.envs import ManagerBasedRlEnvCfg
 from mjlab.envs.mdp.actions import JointPositionActionCfg
+from mjlab.managers.curriculum_manager import CurriculumTermCfg
+from mjlab.managers.reward_manager import RewardTermCfg
 from mjlab.sensor import (
   ContactMatch,
   ContactSensorCfg,
@@ -11,9 +13,11 @@ from mjlab.sensor import (
   RingPatternCfg,
   TerrainHeightSensorCfg,
 )
+from mjlab.tasks.velocity import mdp
 from mjlab.tasks.velocity.mdp import UniformVelocityCommandCfg
 from mjlab.tasks.velocity.velocity_env_cfg import make_velocity_env_cfg
 
+from . import gait_first_mdp
 from .open_duck import (
   BASE_BODY,
   FOOT_GEOMS,
@@ -184,5 +188,126 @@ def open_duck_flat_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     command.ranges.lin_vel_x = (0.15, 0.15)
     command.ranges.lin_vel_y = (0.0, 0.0)
     command.ranges.ang_vel_z = (0.0, 0.0)
+
+  return cfg
+
+
+# Env steps per PPO iteration (must match ``num_steps_per_env`` in rl_cfg.py).
+_STEPS_PER_ITER = 24
+# Curriculum phase boundaries, in PPO iterations.
+_GAIT_PHASE_END = 400
+_BLEND_PHASE_END = 1000
+
+
+def open_duck_gait_first_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
+  """Flat task that learns stepping first and velocity tracking second.
+
+  Phase A (iter 0-400): air time and single-foot contact dominate, velocity
+  tracking is loose and commands are slow forward walks.
+  Phase B (iter 400-1000): gait terms fade, velocity tracking tightens.
+  Phase C (iter 1000+): velocity tracking dominates, backward commands and
+  standing envs are enabled.
+  """
+  cfg = open_duck_flat_env_cfg(play=play)
+
+  # Rewards an alternating gait; air_time alone also rewards two-foot hops.
+  cfg.rewards["single_foot_contact"] = RewardTermCfg(
+    func=gait_first_mdp.single_foot_contact,
+    weight=1.0,
+    params={
+      "sensor_name": "feet_ground_contact",
+      "command_name": "twist",
+      "command_threshold": 0.03,
+    },
+  )
+
+  # Phase A values; the curriculum below takes over from step 0.
+  cfg.rewards["air_time"].weight = 2.0
+  cfg.rewards["air_time"].params["threshold_min"] = 0.08
+  cfg.rewards["air_time"].params["command_threshold"] = 0.0
+  cfg.rewards["foot_swing_height"].weight = -0.2
+  cfg.rewards["track_linear_velocity"].weight = 1.0
+  cfg.rewards["track_linear_velocity"].params["std"] = math.sqrt(0.25)
+  cfg.rewards["action_rate_l2"].weight = -0.01
+
+  command = cfg.commands["twist"]
+  assert isinstance(command, UniformVelocityCommandCfg)
+  command.rel_standing_envs = 0.0
+  command.ranges.lin_vel_x = (0.05, 0.15)
+
+  if play:
+    # Play mode keeps the fixed 0.15 m/s command from the base config.
+    command.ranges.lin_vel_x = (0.15, 0.15)
+    return cfg
+
+  b = _GAIT_PHASE_END * _STEPS_PER_ITER
+  c = _BLEND_PHASE_END * _STEPS_PER_ITER
+
+  def reward_stages(name: str, stages: list[dict]) -> CurriculumTermCfg:
+    return CurriculumTermCfg(
+      func=mdp.reward_curriculum,
+      params={"reward_name": name, "stages": stages},
+    )
+
+  cfg.curriculum["gait_air_time"] = reward_stages(
+    "air_time",
+    [
+      {"step": 0, "weight": 2.0, "params": {"command_threshold": 0.0}},
+      {"step": b, "weight": 1.0, "params": {"command_threshold": 0.03}},
+      {"step": c, "weight": 0.5},
+    ],
+  )
+  cfg.curriculum["gait_single_foot"] = reward_stages(
+    "single_foot_contact",
+    [
+      {"step": 0, "weight": 1.0},
+      {"step": b, "weight": 0.5},
+      {"step": c, "weight": 0.25},
+    ],
+  )
+  cfg.curriculum["gait_swing_height"] = reward_stages(
+    "foot_swing_height",
+    [
+      {"step": 0, "weight": -0.2},
+      {"step": b, "weight": -0.1},
+    ],
+  )
+  cfg.curriculum["track_lin_vel"] = reward_stages(
+    "track_linear_velocity",
+    [
+      {"step": 0, "weight": 1.0, "params": {"std": math.sqrt(0.25)}},
+      {"step": b, "weight": 3.0, "params": {"std": math.sqrt(0.10)}},
+      {"step": c, "weight": 4.0, "params": {"std": math.sqrt(0.05)}},
+    ],
+  )
+  cfg.curriculum["action_rate"] = reward_stages(
+    "action_rate_l2",
+    [
+      {"step": 0, "weight": -0.01},
+      {"step": b, "weight": -0.02},
+      {"step": c, "weight": -0.05},
+    ],
+  )
+  cfg.curriculum["command_vel"] = CurriculumTermCfg(
+    func=mdp.commands_vel,
+    params={
+      "command_name": "twist",
+      "velocity_stages": [
+        {"step": 0, "lin_vel_x": (0.05, 0.15)},
+        {"step": b, "lin_vel_x": (0.0, 0.25)},
+        {"step": c, "lin_vel_x": (-0.20, 0.30)},
+      ],
+    },
+  )
+  cfg.curriculum["standing_envs"] = CurriculumTermCfg(
+    func=gait_first_mdp.standing_envs_curriculum,
+    params={
+      "command_name": "twist",
+      "stages": [
+        {"step": 0, "rel_standing_envs": 0.0},
+        {"step": c, "rel_standing_envs": 0.10},
+      ],
+    },
+  )
 
   return cfg

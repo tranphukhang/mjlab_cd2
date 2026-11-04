@@ -95,6 +95,84 @@ wz      = 0
 standing environments = 20%
 ```
 
+## Pixi + gait-first task (Linux or Windows, NVIDIA GPU)
+
+`pixi.toml` installs Python 3.12, PyTorch (CUDA 12.8, NVIDIA driver >= 570) and
+this package in editable mode, on `linux-64` and `win-64` (tested natively on
+Windows 11 with an RTX 5080 Laptop GPU, no WSL). The download is about 3.5-4.5 GB,
+mostly PyTorch and the NVIDIA CUDA libraries.
+
+Install pixi (then open a new terminal):
+
+```bash
+curl -fsSL https://pixi.sh/install.sh | bash                          # Linux
+powershell -ExecutionPolicy Bypass -c "irm -useb https://pixi.sh/install.ps1 | iex"   # Windows
+```
+
+```bash
+pixi install
+pixi run check         # prints: cuda True <GPU name>
+pixi run smoke         # zero-action play, 1 env
+pixi run train-smoke   # 10 PPO iterations, 64 envs
+pixi run train         # full run, 8192 envs, 3000 iterations (~75 min on RTX 5080 Laptop)
+pixi run tb            # TensorBoard (training logs offline, no W&B)
+```
+
+Extra arguments are appended to a task, e.g.
+`pixi run train --agent.max-iterations 1500`.
+
+Follow training live (Windows, key metrics only):
+
+```bash
+powershell -ExecutionPolicy Bypass -File .\scripts\watch_train.ps1 -Log train.log
+```
+
+where `train.log` is the redirected output of `pixi run train > train.log`.
+
+Play a checkpoint in the browser viewer (http://localhost:8080). The viewer's
+Checkpoints tab picks up new checkpoints while training is still running, and
+Commands → Twist → Enable lets you drive the robot with sliders:
+
+```bash
+pixi run play Mjlab-Velocity-Flat-OpenDuckMiniV2-GaitFirst \
+  --checkpoint-file logs/rsl_rl/open_duck_velocity/<run>/model_2999.pt \
+  --num-envs 16 --viewer viser
+```
+
+Use `--viewer native` for a MuJoCo window instead. Record a 10 s video to
+`logs/rsl_rl/open_duck_velocity/<run>/videos/play/`:
+
+```bash
+pixi run play Mjlab-Velocity-Flat-OpenDuckMiniV2-GaitFirst \
+  --checkpoint-file logs/rsl_rl/open_duck_velocity/<run>/model_2999.pt \
+  --num-envs 1 --video True --video-length 500 --video-width 1280 --video-height 720
+```
+
+`src/open_duck_mjlab/viser_compat.py` works around an mjlab 1.6 bug where the
+Viser velocity joystick crashes when a command range max is below 0.1 (our
+tasks use zero lateral and yaw ranges).
+
+Reference run (RTX 5080 Laptop, Windows 11, 8192 envs, 3000 iterations,
+1 h 15 min): no falls, `error_vel_xy` ~0.09, mean foot air time ~0.095 s.
+
+`Mjlab-Velocity-Flat-OpenDuckMiniV2-GaitFirst` learns stepping first and
+velocity tracking second, using reward/command curricula keyed on PPO
+iteration (24 env steps each):
+
+| | Phase A: gait (iter 0-400) | Phase B: blend (400-1000) | Phase C: tracking (1000+) |
+|---|---|---|---|
+| vx command (m/s) | 0.05 - 0.15 | 0.0 - 0.25 | -0.20 - 0.30 |
+| standing envs | 0% | 0% | 10% |
+| air_time weight | 2.0 | 1.0 | 0.5 |
+| single_foot_contact weight | 1.0 | 0.5 | 0.25 |
+| foot_swing_height weight | -0.2 | -0.1 | -0.1 |
+| track_linear_velocity weight / std | 1.0 / sqrt(0.25) | 3.0 / sqrt(0.10) | 4.0 / sqrt(0.05) |
+| action_rate_l2 weight | -0.01 | -0.02 | -0.05 |
+
+In TensorBoard, `Episode_Reward/air_time` and `Episode_Reward/single_foot_contact`
+should rise first, then `Episode_Reward/track_linear_velocity` after iteration
+~400. `Curriculum/*` shows the active weights.
+
 ## 1. Clone and create an environment
 
 Ubuntu + NVIDIA GPU is recommended.

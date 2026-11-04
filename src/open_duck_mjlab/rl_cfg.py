@@ -46,3 +46,16 @@ def open_duck_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
     num_steps_per_env=24,
     max_iterations=1_000,
   )
+
+
+def open_duck_gait_first_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
+  """PPO configuration for the gait-first curriculum task.
+
+  Logs to TensorBoard so training needs no network connection.
+  """
+  cfg = open_duck_ppo_runner_cfg()
+  cfg.run_name = "gait_first"
+  cfg.max_iterations = 3_000
+  cfg.logger = "tensorboard"
+  cfg.upload_model = False
+  return cfg
