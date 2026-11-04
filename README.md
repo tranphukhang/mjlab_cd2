@@ -173,6 +173,35 @@ In TensorBoard, `Episode_Reward/air_time` and `Episode_Reward/single_foot_contac
 should rise first, then `Episode_Reward/track_linear_velocity` after iteration
 ~400. `Curriculum/*` shows the active weights.
 
+### ZMP and friction-cone fine-tune
+
+`Mjlab-Velocity-Flat-OpenDuckMiniV2-GaitFirst-ZMP` fine-tunes a finished
+GaitFirst checkpoint (phase C weights fixed, curricula removed) with extra
+terms from a 4-slot foot contact sensor (`feet_contact_points`):
+
+| Term | Weight | What it does |
+|---|---|---|
+| `zmp_margin` | -1.0 | Per loaded foot, center of pressure (= ZMP on flat ground) in the ankle frame; `exp(-margin / 1 cm)` to the nearest sole edge, averaged over loaded feet |
+| `foot_tilt` | -2.0 | Sideways roll of loaded feet (standing on the sole edge), averaged over loaded feet |
+| `friction_cone` | -1.0 | Per-foot net force outside `mu = 0.5` (sim floor ~0.8) |
+| `single_foot_contact` | 0.5 | Raised from 0.25 so stepping survives the foot penalties |
+
+Penalizing the ZMP during single support only made the policy shuffle with both
+feet down; averaging over loaded feet in every phase avoids that.
+
+```bash
+pixi run python -c "from mjlab.scripts.train import main; main()" \
+  Mjlab-Velocity-Flat-OpenDuckMiniV2-GaitFirst-ZMP --env.scene.num-envs 8192 \
+  --agent.resume True --agent.load-run <gait_first_run> --agent.load-checkpoint model_2999.pt
+```
+
+Logged metrics: `Metrics/zmp_margin_mm`, `foot_cop_margin_mm`,
+`stance_roll_deg`, `friction_ratio_mean`, `friction_cone_violation_frac`.
+Reference (1000 + 1000 iterations from model_2999): ZMP margin 1.2 -> 5.0 mm
+(max ~13 mm), foot roll 12.4 -> 4.4 deg, no falls; `error_vel_xy` 0.09 -> 0.12
+and shorter steps (the robot has no ankle roll joint, so flat feet need body
+sway).
+
 ## 1. Clone and create an environment
 
 Ubuntu + NVIDIA GPU is recommended.

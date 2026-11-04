@@ -29,6 +29,7 @@ JOINT_NAMES = (
 
 FOOT_SITES = ("L6", "R6")
 FOOT_GEOMS = ("left_foot_collision", "right_foot_collision")
+FOOT_BODIES = ("L5_ankle", "R5_ankle")
 BASE_BODY = "base_link"
 
 

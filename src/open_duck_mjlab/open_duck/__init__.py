@@ -1,5 +1,6 @@
 from .open_duck_constants import (
   BASE_BODY,
+  FOOT_BODIES,
   FOOT_GEOMS,
   FOOT_SITES,
   JOINT_NAMES,
@@ -9,6 +10,7 @@ from .open_duck_constants import (
 
 __all__ = [
   "BASE_BODY",
+  "FOOT_BODIES",
   "FOOT_GEOMS",
   "FOOT_SITES",
   "JOINT_NAMES",

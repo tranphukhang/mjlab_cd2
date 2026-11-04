@@ -59,3 +59,11 @@ def open_duck_gait_first_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
   cfg.logger = "tensorboard"
   cfg.upload_model = False
   return cfg
+
+
+def open_duck_gait_first_zmp_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
+  """PPO configuration for fine-tuning with ZMP and friction-cone penalties."""
+  cfg = open_duck_gait_first_ppo_runner_cfg()
+  cfg.run_name = "gait_first_zmp"
+  cfg.max_iterations = 1_000
+  return cfg

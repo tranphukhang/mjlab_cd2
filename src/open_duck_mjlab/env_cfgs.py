@@ -6,6 +6,7 @@ from mjlab.envs import ManagerBasedRlEnvCfg
 from mjlab.envs.mdp.actions import JointPositionActionCfg
 from mjlab.managers.curriculum_manager import CurriculumTermCfg
 from mjlab.managers.reward_manager import RewardTermCfg
+from mjlab.managers.scene_entity_config import SceneEntityCfg
 from mjlab.sensor import (
   ContactMatch,
   ContactSensorCfg,
@@ -20,6 +21,7 @@ from mjlab.tasks.velocity.velocity_env_cfg import make_velocity_env_cfg
 from . import gait_first_mdp
 from .open_duck import (
   BASE_BODY,
+  FOOT_BODIES,
   FOOT_GEOMS,
   FOOT_SITES,
   OPEN_DUCK_ACTION_SCALE,
@@ -308,6 +310,74 @@ def open_duck_gait_first_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         {"step": c, "rel_standing_envs": 0.10},
       ],
     },
+  )
+
+  return cfg
+
+
+def open_duck_gait_first_zmp_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
+  """Gait-first task with ZMP-margin and friction-cone penalties.
+
+  Meant for fine-tuning a finished GaitFirst checkpoint. The curricula count
+  env steps, so a fresh env would restart at phase A; they are replaced here by
+  their final (phase C) values.
+  """
+  cfg = open_duck_gait_first_env_cfg(play=play)
+  for name in (
+    "gait_air_time",
+    "gait_single_foot",
+    "gait_swing_height",
+    "track_lin_vel",
+    "action_rate",
+    "command_vel",
+    "standing_envs",
+  ):
+    cfg.curriculum.pop(name, None)
+
+  cfg.rewards["air_time"].weight = 0.5
+  cfg.rewards["air_time"].params["command_threshold"] = 0.03
+  cfg.rewards["single_foot_contact"].weight = 0.5  # Keep stepping under the foot penalties.
+  cfg.rewards["foot_swing_height"].weight = -0.1
+  cfg.rewards["track_linear_velocity"].weight = 4.0
+  cfg.rewards["track_linear_velocity"].params["std"] = math.sqrt(0.05)
+  cfg.rewards["action_rate_l2"].weight = -0.05
+
+  if not play:
+    command = cfg.commands["twist"]
+    assert isinstance(command, UniformVelocityCommandCfg)
+    command.rel_standing_envs = 0.10
+    command.ranges.lin_vel_x = (-0.20, 0.30)
+
+  # Up to 4 contacts per foot with positions and contact-frame forces, for the
+  # center of pressure (ZMP on flat ground) and the friction cone.
+  feet_contact_points_cfg = ContactSensorCfg(
+    name="feet_contact_points",
+    primary=ContactMatch(mode="geom", pattern=FOOT_GEOMS, entity="robot"),
+    secondary=ContactMatch(mode="body", pattern="terrain"),
+    fields=("found", "force", "pos"),
+    reduce="maxforce",
+    num_slots=4,
+  )
+  cfg.scene.sensors = (*cfg.scene.sensors, feet_contact_points_cfg)
+
+  feet_cfg = SceneEntityCfg("robot", body_names=FOOT_BODIES, preserve_order=True)
+  cfg.rewards["zmp_margin"] = RewardTermCfg(
+    func=gait_first_mdp.zmp_margin_penalty,
+    weight=-1.0,
+    params={"sensor_name": "feet_contact_points", "std": 0.01, "asset_cfg": feet_cfg},
+  )
+  # Walking on the sole edge keeps the ZMP margin near zero; penalize the
+  # sideways roll of loaded feet directly for a smoother learning signal.
+  cfg.rewards["foot_tilt"] = RewardTermCfg(
+    func=gait_first_mdp.stance_foot_tilt_penalty,
+    weight=-2.0,
+    params={"sensor_name": "feet_contact_points", "asset_cfg": feet_cfg},
+  )
+  # Sim floor friction is ~0.8; keep the gait inside mu = 0.5 for slippery floors.
+  cfg.rewards["friction_cone"] = RewardTermCfg(
+    func=gait_first_mdp.friction_cone_penalty,
+    weight=-1.0,
+    params={"sensor_name": "feet_contact_points", "mu": 0.5},
   )
 
   return cfg
