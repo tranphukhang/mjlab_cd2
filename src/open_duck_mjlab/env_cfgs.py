@@ -4,6 +4,10 @@ import math
 
 from mjlab.envs import ManagerBasedRlEnvCfg
 from mjlab.envs.mdp.actions import JointPositionActionCfg
+from mjlab.managers.curriculum_manager import CurriculumTermCfg
+from mjlab.managers.observation_manager import ObservationTermCfg
+from mjlab.managers.reward_manager import RewardTermCfg
+from mjlab.managers.scene_entity_config import SceneEntityCfg
 from mjlab.sensor import (
   ContactMatch,
   ContactSensorCfg,
@@ -11,11 +15,14 @@ from mjlab.sensor import (
   RingPatternCfg,
   TerrainHeightSensorCfg,
 )
+from mjlab.tasks.velocity import mdp
 from mjlab.tasks.velocity.mdp import UniformVelocityCommandCfg
 from mjlab.tasks.velocity.velocity_env_cfg import make_velocity_env_cfg
 
+from . import gait_first_mdp
 from .open_duck import (
   BASE_BODY,
+  FOOT_BODIES,
   FOOT_GEOMS,
   FOOT_SITES,
   OPEN_DUCK_ACTION_SCALE,
@@ -185,4 +192,268 @@ def open_duck_flat_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     command.ranges.lin_vel_y = (0.0, 0.0)
     command.ranges.ang_vel_z = (0.0, 0.0)
 
+  return cfg
+
+
+# Env steps per PPO iteration (must match ``num_steps_per_env`` in rl_cfg.py).
+_STEPS_PER_ITER = 24
+# Curriculum phase boundaries, in PPO iterations.
+_GAIT_PHASE_END = 400
+_BLEND_PHASE_END = 1000
+
+
+def open_duck_gait_first_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
+  """Flat task that learns stepping first and velocity tracking second.
+
+  Phase A (iter 0-400): air time and single-foot contact dominate, velocity
+  tracking is loose and commands are slow forward walks.
+  Phase B (iter 400-1000): gait terms fade, velocity tracking tightens.
+  Phase C (iter 1000+): velocity tracking dominates, backward commands and
+  standing envs are enabled.
+  """
+  cfg = open_duck_flat_env_cfg(play=play)
+
+  # Rewards an alternating gait; air_time alone also rewards two-foot hops.
+  cfg.rewards["single_foot_contact"] = RewardTermCfg(
+    func=gait_first_mdp.single_foot_contact,
+    weight=1.0,
+    params={
+      "sensor_name": "feet_ground_contact",
+      "command_name": "twist",
+      "command_threshold": 0.03,
+    },
+  )
+
+  # Phase A values; the curriculum below takes over from step 0.
+  cfg.rewards["air_time"].weight = 2.0
+  cfg.rewards["air_time"].params["threshold_min"] = 0.08
+  cfg.rewards["air_time"].params["command_threshold"] = 0.0
+  cfg.rewards["foot_swing_height"].weight = -0.2
+  cfg.rewards["track_linear_velocity"].weight = 1.0
+  cfg.rewards["track_linear_velocity"].params["std"] = math.sqrt(0.25)
+  cfg.rewards["action_rate_l2"].weight = -0.01
+
+  command = cfg.commands["twist"]
+  assert isinstance(command, UniformVelocityCommandCfg)
+  command.rel_standing_envs = 0.0
+  command.ranges.lin_vel_x = (0.05, 0.15)
+
+  if play:
+    # Play mode keeps the fixed 0.15 m/s command from the base config.
+    command.ranges.lin_vel_x = (0.15, 0.15)
+    return cfg
+
+  b = _GAIT_PHASE_END * _STEPS_PER_ITER
+  c = _BLEND_PHASE_END * _STEPS_PER_ITER
+
+  def reward_stages(name: str, stages: list[dict]) -> CurriculumTermCfg:
+    return CurriculumTermCfg(
+      func=mdp.reward_curriculum,
+      params={"reward_name": name, "stages": stages},
+    )
+
+  cfg.curriculum["gait_air_time"] = reward_stages(
+    "air_time",
+    [
+      {"step": 0, "weight": 2.0, "params": {"command_threshold": 0.0}},
+      {"step": b, "weight": 1.0, "params": {"command_threshold": 0.03}},
+      {"step": c, "weight": 0.5},
+    ],
+  )
+  cfg.curriculum["gait_single_foot"] = reward_stages(
+    "single_foot_contact",
+    [
+      {"step": 0, "weight": 1.0},
+      {"step": b, "weight": 0.5},
+      {"step": c, "weight": 0.25},
+    ],
+  )
+  cfg.curriculum["gait_swing_height"] = reward_stages(
+    "foot_swing_height",
+    [
+      {"step": 0, "weight": -0.2},
+      {"step": b, "weight": -0.1},
+    ],
+  )
+  cfg.curriculum["track_lin_vel"] = reward_stages(
+    "track_linear_velocity",
+    [
+      {"step": 0, "weight": 1.0, "params": {"std": math.sqrt(0.25)}},
+      {"step": b, "weight": 3.0, "params": {"std": math.sqrt(0.10)}},
+      {"step": c, "weight": 4.0, "params": {"std": math.sqrt(0.05)}},
+    ],
+  )
+  cfg.curriculum["action_rate"] = reward_stages(
+    "action_rate_l2",
+    [
+      {"step": 0, "weight": -0.01},
+      {"step": b, "weight": -0.02},
+      {"step": c, "weight": -0.05},
+    ],
+  )
+  cfg.curriculum["command_vel"] = CurriculumTermCfg(
+    func=mdp.commands_vel,
+    params={
+      "command_name": "twist",
+      "velocity_stages": [
+        {"step": 0, "lin_vel_x": (0.05, 0.15)},
+        {"step": b, "lin_vel_x": (0.0, 0.25)},
+        {"step": c, "lin_vel_x": (-0.20, 0.30)},
+      ],
+    },
+  )
+  cfg.curriculum["standing_envs"] = CurriculumTermCfg(
+    func=gait_first_mdp.standing_envs_curriculum,
+    params={
+      "command_name": "twist",
+      "stages": [
+        {"step": 0, "rel_standing_envs": 0.0},
+        {"step": c, "rel_standing_envs": 0.10},
+      ],
+    },
+  )
+
+  return cfg
+
+
+def open_duck_gait_first_zmp_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
+  """Gait-first task with ZMP-margin and friction-cone penalties.
+
+  Meant for fine-tuning a finished GaitFirst checkpoint. The curricula count
+  env steps, so a fresh env would restart at phase A; they are replaced here by
+  their final (phase C) values.
+  """
+  cfg = open_duck_gait_first_env_cfg(play=play)
+  for name in (
+    "gait_air_time",
+    "gait_single_foot",
+    "gait_swing_height",
+    "track_lin_vel",
+    "action_rate",
+    "command_vel",
+    "standing_envs",
+  ):
+    cfg.curriculum.pop(name, None)
+
+  cfg.rewards["air_time"].weight = 0.5
+  cfg.rewards["air_time"].params["command_threshold"] = 0.03
+  cfg.rewards["single_foot_contact"].weight = 0.5  # Keep stepping under the foot penalties.
+  cfg.rewards["foot_swing_height"].weight = -0.1
+  cfg.rewards["track_linear_velocity"].weight = 4.0
+  cfg.rewards["track_linear_velocity"].params["std"] = math.sqrt(0.05)
+  cfg.rewards["action_rate_l2"].weight = -0.05
+
+  if not play:
+    command = cfg.commands["twist"]
+    assert isinstance(command, UniformVelocityCommandCfg)
+    command.rel_standing_envs = 0.10
+    command.ranges.lin_vel_x = (-0.20, 0.30)
+
+  # Up to 4 contacts per foot with positions and contact-frame forces, for the
+  # center of pressure (ZMP on flat ground) and the friction cone.
+  feet_contact_points_cfg = ContactSensorCfg(
+    name="feet_contact_points",
+    primary=ContactMatch(mode="geom", pattern=FOOT_GEOMS, entity="robot"),
+    secondary=ContactMatch(mode="body", pattern="terrain"),
+    fields=("found", "force", "pos"),
+    reduce="maxforce",
+    num_slots=4,
+  )
+  cfg.scene.sensors = (*cfg.scene.sensors, feet_contact_points_cfg)
+
+  feet_cfg = SceneEntityCfg("robot", body_names=FOOT_BODIES, preserve_order=True)
+  cfg.rewards["zmp_margin"] = RewardTermCfg(
+    func=gait_first_mdp.zmp_margin_penalty,
+    weight=-1.0,
+    params={"sensor_name": "feet_contact_points", "std": 0.01, "asset_cfg": feet_cfg},
+  )
+  # Walking on the sole edge keeps the ZMP margin near zero; penalize the
+  # sideways roll of loaded feet directly for a smoother learning signal.
+  cfg.rewards["foot_tilt"] = RewardTermCfg(
+    func=gait_first_mdp.stance_foot_tilt_penalty,
+    weight=-2.0,
+    params={"sensor_name": "feet_contact_points", "asset_cfg": feet_cfg},
+  )
+  # Sim floor friction is ~0.8; keep the gait inside mu = 0.5 for slippery floors.
+  cfg.rewards["friction_cone"] = RewardTermCfg(
+    func=gait_first_mdp.friction_cone_penalty,
+    weight=-1.0,
+    params={"sensor_name": "feet_contact_points", "mu": 0.5},
+  )
+
+  return cfg
+
+
+# Walking gait clock, derived from the MJCF (see README "Gait clock timing"):
+# CoM height 0.152 m (LIPM omega 8.0 rad/s), leg 0.158 m, feet 0.18 m apart,
+# STS3215 servos. Single support of 0.16 s gives omega * T_ss ~ 1.3, the human
+# walking ratio. Cycle: double support 0.04 s -> right swing 0.16 s -> double
+# support 0.04 s -> left swing 0.16 s. A 0.6 s cycle (0.24 s swings) was only
+# reached by pivoting on the stance foot; with heading held the policy fell back
+# to ~0.1 s steps (wide stance, no ankle roll joint).
+GAIT_PERIOD_S = 0.40
+GAIT_DOUBLE_SUPPORT = 0.10  # Fraction of the period per double-support phase.
+
+
+def open_duck_gait_phase_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
+  """ZMP task plus a gait clock with a walking contact schedule.
+
+  The actor and critic observe ``[sin, cos]`` of the clock phase (appended
+  last, so an existing ZMP checkpoint can be widened with zero weights). The
+  contact-schedule reward asks for the double support -> right swing ->
+  double support -> left swing cycle of humanoid walking.
+  """
+  cfg = open_duck_gait_first_zmp_env_cfg(play=play)
+
+  clock = ObservationTermCfg(
+    func=gait_first_mdp.gait_clock, params={"period": GAIT_PERIOD_S}
+  )
+  cfg.observations["actor"].terms["gait_clock"] = clock
+  cfg.observations["critic"].terms["gait_clock"] = clock
+
+  cfg.rewards["gait_schedule"] = RewardTermCfg(
+    func=gait_first_mdp.gait_contact_schedule,
+    weight=2.0,
+    params={
+      "sensor_name": "feet_ground_contact",
+      "command_name": "twist",
+      "period": GAIT_PERIOD_S,
+      "double_support": GAIT_DOUBLE_SUPPORT,
+      "command_threshold": 0.03,
+    },
+  )
+  # Rewarding exactly one foot down fights the double-support phases.
+  cfg.rewards.pop("single_foot_contact", None)
+  # feet_air_time pays every step a foot has been airborne 0.1-0.3 s, so a
+  # 0.24 s + 0.16 s limp earned more than two scheduled 0.16 s swings. The
+  # schedule sets swing timing; penalize deviations from it at touchdown.
+  # At -10 the term averaged ~-0.09 per step against +1.2 for gait_schedule
+  # and left the limp untouched; -100 puts it on par with zmp_margin.
+  cfg.rewards.pop("air_time", None)
+  cfg.rewards["swing_duration"] = RewardTermCfg(
+    func=gait_first_mdp.swing_duration_penalty,
+    weight=-100.0,
+    params={
+      "sensor_name": "feet_ground_contact",
+      "command_name": "twist",
+      "target": (0.5 - GAIT_DOUBLE_SUPPORT) * GAIT_PERIOD_S,
+      "command_threshold": 0.03,
+    },
+  )
+  # Commands are in the body frame, so spinning while stepping forward still
+  # tracks vx. With the base 0.5 / sqrt(0.5) yaw term the policy spun at
+  # ~1.75 rad/s, pivoting on the stance foot to hit the schedule.
+  cfg.rewards["track_angular_velocity"].weight = 3.0
+  cfg.rewards["track_angular_velocity"].params["std"] = math.sqrt(0.1)
+  # Even then it kept a steady clockwise drift (~0.24 rad/s). Hold a world
+  # heading instead: the yaw-rate command becomes 1.0 * heading error, so any
+  # drift is commanded back, and random targets teach turning both ways.
+  command = cfg.commands["twist"]
+  assert isinstance(command, UniformVelocityCommandCfg)
+  command.heading_command = True
+  command.heading_control_stiffness = 1.0
+  command.rel_heading_envs = 1.0
+  command.ranges.ang_vel_z = (-0.5, 0.5)
+  # Play walks straight along world +x.
+  command.ranges.heading = (0.0, 0.0) if play else (-math.pi, math.pi)
   return cfg

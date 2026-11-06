@@ -11,3 +11,6 @@ checkpoints/
 *.onnx
 .DS_Store
 .vscode/
+.pixi/
+*.log
+videos/
