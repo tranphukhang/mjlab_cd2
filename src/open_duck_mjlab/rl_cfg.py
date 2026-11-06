@@ -1,10 +1,31 @@
 """PPO configuration for Open Duck Mini V2 velocity tracking."""
 
+from dataclasses import asdict, dataclass
+
 from mjlab.rl import (
   RslRlModelCfg,
   RslRlOnPolicyRunnerCfg,
   RslRlPpoAlgorithmCfg,
 )
+
+
+@dataclass
+class SymmetryCfg:
+  """rsl_rl symmetry extension settings (Mittal et al., ICRA 2024)."""
+
+  data_augmentation_func: str = "open_duck_mjlab.symmetry:mirror_augmentation"
+  use_data_augmentation: bool = True
+  """Append left/right mirrored samples to every PPO mini-batch."""
+  use_mirror_loss: bool = True
+  mirror_loss_coeff: float = 5.0
+  """Weight of the MSE between the policy on mirrored obs and mirrored actions."""
+
+
+@dataclass
+class OpenDuckPpoAlgorithmCfg(RslRlPpoAlgorithmCfg):
+  """mjlab's PPO config plus the ``symmetry_cfg`` rsl_rl already accepts."""
+
+  symmetry_cfg: SymmetryCfg | None = None
 
 
 def open_duck_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
@@ -66,4 +87,17 @@ def open_duck_gait_first_zmp_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
   cfg = open_duck_gait_first_ppo_runner_cfg()
   cfg.run_name = "gait_first_zmp"
   cfg.max_iterations = 1_000
+  return cfg
+
+
+def open_duck_gait_phase_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
+  """Fine-tune of the ZMP policy with the gait clock and contact schedule."""
+  cfg = open_duck_gait_first_ppo_runner_cfg()
+  cfg.run_name = "gait_phase"
+  cfg.max_iterations = 1_500
+  # Without symmetry the policy limped (left swing 0.24 s, right 0.14 s) even
+  # though the model is mirror-symmetric.
+  cfg.algorithm = OpenDuckPpoAlgorithmCfg(
+    **asdict(cfg.algorithm), symmetry_cfg=SymmetryCfg()
+  )
   return cfg

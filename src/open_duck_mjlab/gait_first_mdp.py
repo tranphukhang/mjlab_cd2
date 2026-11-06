@@ -220,3 +220,94 @@ def stance_foot_tilt_penalty(
     ((f_n > 0.05).float().sum(dim=-1) * loaded).sum() / num_loaded
   )
   return (roll.abs() * loaded).sum(dim=1) / loaded.sum(dim=1).clamp(min=1.0)
+
+
+def _gait_phase(env: ManagerBasedRlEnv, period: float) -> torch.Tensor:
+  """Gait cycle phase in [0, 1), restarting with each episode."""
+  return torch.remainder(env.episode_length_buf * env.step_dt / period, 1.0)
+
+
+def gait_clock(env: ManagerBasedRlEnv, period: float) -> torch.Tensor:
+  """Observation ``[sin(2 pi phase), cos(2 pi phase)]`` of the gait clock."""
+  angle = 2.0 * torch.pi * _gait_phase(env, period)
+  return torch.stack((torch.sin(angle), torch.cos(angle)), dim=-1)
+
+
+def gait_contact_schedule(
+  env: ManagerBasedRlEnv,
+  sensor_name: str,
+  command_name: str,
+  period: float,
+  double_support: float,
+  command_threshold: float = 0.03,
+) -> torch.Tensor:
+  """Reward feet contacts that follow a walking schedule on the gait clock.
+
+  One cycle, as fractions of ``period``:
+  ``[0, d)`` double support, ``[d, 0.5)`` right swing,
+  ``[0.5, 0.5 + d)`` double support, ``[0.5 + d, 1)`` left swing,
+  with ``d = double_support``. Each foot earns ``+w`` when its contact matches
+  the schedule and ``-w``, with ``w = 0.5 / (time fraction of the scheduled
+  phase)``, so a perfect cycle averages 1 while keeping both feet down (or
+  shuffling off-beat) averages 0. A plain match fraction let standing still
+  score ~0.62 and the policy settled there. Envs with a near-zero command
+  should keep both feet down (+-1 per foot).
+  """
+  sensor: ContactSensor = env.scene[sensor_name]
+  assert sensor.data.found is not None
+  contact = sensor.data.found.view(env.num_envs, -1) > 0  # [B, 2] (left, right)
+  phase = _gait_phase(env, period)
+  right_swing = (phase >= double_support) & (phase < 0.5)
+  left_swing = phase >= 0.5 + double_support
+  stance = torch.stack((~left_swing, ~right_swing), dim=1)
+
+  swing_frac = 0.5 - double_support
+  weight = torch.where(stance, 0.5 / (1.0 - swing_frac), 0.5 / swing_frac)
+
+  command = env.command_manager.get_command(command_name)
+  if command is not None:
+    total_command = torch.norm(command[:, :2], dim=1) + torch.abs(command[:, 2])
+    standing = (total_command <= command_threshold).unsqueeze(1)
+    stance = stance | standing
+    weight = torch.where(standing, torch.ones_like(weight), weight)
+
+  match = contact == stance
+  env.extras["log"]["Metrics/gait_schedule_match"] = match.float().mean()
+  env.extras["log"]["Metrics/double_support_frac"] = contact.all(dim=1).float().mean()
+  env.extras["log"]["Metrics/flight_frac"] = (~contact.any(dim=1)).float().mean()
+  sign = match.float() * 2.0 - 1.0
+  return (sign * weight).mean(dim=1)
+
+
+def swing_duration_penalty(
+  env: ManagerBasedRlEnv,
+  sensor_name: str,
+  command_name: str,
+  target: float,
+  command_threshold: float = 0.03,
+) -> torch.Tensor:
+  """Penalize ``|swing time - target|`` (s) at every foot touchdown.
+
+  A symmetric policy still settled on a limping cycle (one 0.24 s and one
+  0.16 s swing, no double support); the mirror image is equally stable, so
+  symmetry alone cannot remove it. Two swings of ``target`` per cycle leave
+  room for the scheduled double-support phases.
+  """
+  sensor: ContactSensor = env.scene[sensor_name]
+  last_air_time = sensor.data.last_air_time
+  assert last_air_time is not None, "Contact sensor needs track_air_time=True."
+  landed = sensor.compute_first_contact(env.step_dt).float()  # [B, 2]
+  err = (last_air_time - target).abs() * landed
+
+  num_landed = landed.sum().clamp(min=1.0)
+  env.extras["log"]["Metrics/swing_time_ms"] = (
+    1000.0 * (last_air_time * landed).sum() / num_landed
+  )
+  env.extras["log"]["Metrics/swing_time_err_ms"] = 1000.0 * err.sum() / num_landed
+
+  penalty = err.sum(dim=1)
+  command = env.command_manager.get_command(command_name)
+  if command is not None:
+    total_command = torch.norm(command[:, :2], dim=1) + torch.abs(command[:, 2])
+    penalty = penalty * (total_command > command_threshold).float()
+  return penalty

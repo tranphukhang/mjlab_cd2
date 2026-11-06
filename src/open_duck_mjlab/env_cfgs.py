@@ -5,6 +5,7 @@ import math
 from mjlab.envs import ManagerBasedRlEnvCfg
 from mjlab.envs.mdp.actions import JointPositionActionCfg
 from mjlab.managers.curriculum_manager import CurriculumTermCfg
+from mjlab.managers.observation_manager import ObservationTermCfg
 from mjlab.managers.reward_manager import RewardTermCfg
 from mjlab.managers.scene_entity_config import SceneEntityCfg
 from mjlab.sensor import (
@@ -380,4 +381,79 @@ def open_duck_gait_first_zmp_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg
     params={"sensor_name": "feet_contact_points", "mu": 0.5},
   )
 
+  return cfg
+
+
+# Walking gait clock, derived from the MJCF (see README "Gait clock timing"):
+# CoM height 0.152 m (LIPM omega 8.0 rad/s), leg 0.158 m, feet 0.18 m apart,
+# STS3215 servos. Single support of 0.16 s gives omega * T_ss ~ 1.3, the human
+# walking ratio. Cycle: double support 0.04 s -> right swing 0.16 s -> double
+# support 0.04 s -> left swing 0.16 s. A 0.6 s cycle (0.24 s swings) was only
+# reached by pivoting on the stance foot; with heading held the policy fell back
+# to ~0.1 s steps (wide stance, no ankle roll joint).
+GAIT_PERIOD_S = 0.40
+GAIT_DOUBLE_SUPPORT = 0.10  # Fraction of the period per double-support phase.
+
+
+def open_duck_gait_phase_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
+  """ZMP task plus a gait clock with a walking contact schedule.
+
+  The actor and critic observe ``[sin, cos]`` of the clock phase (appended
+  last, so an existing ZMP checkpoint can be widened with zero weights). The
+  contact-schedule reward asks for the double support -> right swing ->
+  double support -> left swing cycle of humanoid walking.
+  """
+  cfg = open_duck_gait_first_zmp_env_cfg(play=play)
+
+  clock = ObservationTermCfg(
+    func=gait_first_mdp.gait_clock, params={"period": GAIT_PERIOD_S}
+  )
+  cfg.observations["actor"].terms["gait_clock"] = clock
+  cfg.observations["critic"].terms["gait_clock"] = clock
+
+  cfg.rewards["gait_schedule"] = RewardTermCfg(
+    func=gait_first_mdp.gait_contact_schedule,
+    weight=2.0,
+    params={
+      "sensor_name": "feet_ground_contact",
+      "command_name": "twist",
+      "period": GAIT_PERIOD_S,
+      "double_support": GAIT_DOUBLE_SUPPORT,
+      "command_threshold": 0.03,
+    },
+  )
+  # Rewarding exactly one foot down fights the double-support phases.
+  cfg.rewards.pop("single_foot_contact", None)
+  # feet_air_time pays every step a foot has been airborne 0.1-0.3 s, so a
+  # 0.24 s + 0.16 s limp earned more than two scheduled 0.16 s swings. The
+  # schedule sets swing timing; penalize deviations from it at touchdown.
+  # At -10 the term averaged ~-0.09 per step against +1.2 for gait_schedule
+  # and left the limp untouched; -100 puts it on par with zmp_margin.
+  cfg.rewards.pop("air_time", None)
+  cfg.rewards["swing_duration"] = RewardTermCfg(
+    func=gait_first_mdp.swing_duration_penalty,
+    weight=-100.0,
+    params={
+      "sensor_name": "feet_ground_contact",
+      "command_name": "twist",
+      "target": (0.5 - GAIT_DOUBLE_SUPPORT) * GAIT_PERIOD_S,
+      "command_threshold": 0.03,
+    },
+  )
+  # Commands are in the body frame, so spinning while stepping forward still
+  # tracks vx. With the base 0.5 / sqrt(0.5) yaw term the policy spun at
+  # ~1.75 rad/s, pivoting on the stance foot to hit the schedule.
+  cfg.rewards["track_angular_velocity"].weight = 3.0
+  cfg.rewards["track_angular_velocity"].params["std"] = math.sqrt(0.1)
+  # Even then it kept a steady clockwise drift (~0.24 rad/s). Hold a world
+  # heading instead: the yaw-rate command becomes 1.0 * heading error, so any
+  # drift is commanded back, and random targets teach turning both ways.
+  command = cfg.commands["twist"]
+  assert isinstance(command, UniformVelocityCommandCfg)
+  command.heading_command = True
+  command.heading_control_stiffness = 1.0
+  command.rel_heading_envs = 1.0
+  command.ranges.ang_vel_z = (-0.5, 0.5)
+  # Play walks straight along world +x.
+  command.ranges.heading = (0.0, 0.0) if play else (-math.pi, math.pi)
   return cfg
