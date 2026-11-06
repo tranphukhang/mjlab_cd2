@@ -98,6 +98,7 @@ class SrbdMpc:
     contact: np.ndarray,
     foot_rel: np.ndarray,
     foot_yaw: np.ndarray,
+    u_ref: np.ndarray | None = None,
   ) -> np.ndarray:
     """Return the first-step input ``[F_L, F_R, M_L, M_R]`` (12,).
 
@@ -107,6 +108,8 @@ class SrbdMpc:
       contact: stance flags per step and foot, (N, 2) bool, (left, right).
       foot_rel: foot position minus CoM per step and foot, (N, 2, 3), world.
       foot_yaw: yaw of each foot's sole frame (2,).
+      u_ref: optional input reference (N, 12); R then penalizes ``u - u_ref``
+        instead of ``u`` (e.g. the forces of a ZMP walking plan).
     """
     p = self.p
     n = p.horizon
@@ -116,8 +119,10 @@ class SrbdMpc:
     # Cost 1/2 z^T P z + q^T z.
     q_diag = np.tile(np.asarray(p.q_weights), n)
     r_one = np.array([p.r_force] * 6 + [p.r_moment] * 6)
-    p_mat = sp.diags(np.concatenate([q_diag, np.tile(r_one, n)]) * 2.0, format="csc")
-    q_vec = np.concatenate([-2.0 * q_diag * x_ref.reshape(-1), np.zeros(nuv)])
+    r_diag = np.tile(r_one, n)
+    p_mat = sp.diags(np.concatenate([q_diag, r_diag]) * 2.0, format="csc")
+    q_u = np.zeros(nuv) if u_ref is None else -2.0 * r_diag * np.asarray(u_ref).reshape(-1)
+    q_vec = np.concatenate([-2.0 * q_diag * x_ref.reshape(-1), q_u])
 
     # Dynamics: x_{k+1} - A_k x_k - B_k u_k = 0 (x_0 is given).
     rows, cols, vals = [], [], []
@@ -226,4 +231,5 @@ class SrbdMpc:
     self.last_solve_ms = 1e3 * (res.info.setup_time + res.info.solve_time)
     if res.x is None or not np.all(np.isfinite(res.x)):
       return np.zeros(NU)
+    self.last_x = res.x[:nxv].reshape(n, NX)
     return res.x[nxv : nxv + NU].copy()

@@ -53,6 +53,7 @@ class ComEstimator:
 
   def reset(self, feet_world: np.ndarray) -> None:
     self.foot_world = np.array(feet_world, dtype=float)
+    self.foot_z0 = self.foot_world[:, 2].copy()
     self.contact = np.array([True, True])
     self.com = None
     self.vcom = np.zeros(3)
@@ -76,7 +77,9 @@ class ComEstimator:
     for i in range(2):
       if contact[i] and not self.contact[i]:  # touchdown: record where it landed
         self.foot_world[i] = base + sites[i]
-        self.foot_world[i][2] = 0.0 if self.foot_world[i][2] < 0.01 else self.foot_world[i][2]
+        # Flat ground: a landed sole is at its start height, so small height
+        # errors do not pile up step after step.
+        self.foot_world[i][2] = self.foot_z0[i]
     self.contact = np.array(contact, dtype=bool)
     com = base + d.subtree_com[self.base_id]
     if self.com is not None:
@@ -119,10 +122,14 @@ class BalanceFeedback:
     com_acc: np.ndarray,
     zmp: np.ndarray,
     feet: np.ndarray,
+    wrench: np.ndarray | None = None,
   ) -> np.ndarray:
     """Joint target offsets (10,), computed at the planned configuration.
 
     ``d_plan`` must hold the IK solution with kinematics and comPos done.
+    ``wrench`` (12,: F_L, F_R, M_L, M_R, world frame, force on the robot) is
+    the ground reaction of a force MPC; without it the load term uses the
+    planned CoM acceleration split between the feet by the ZMP.
     """
     m = self.m
     out = np.zeros(10)
@@ -155,6 +162,10 @@ class BalanceFeedback:
         share = np.array([lam, 1.0 - lam])
       for i in range(2):
         leg = self.legs[i]
-        tau = bias[leg] - jacs[i][0][:, leg].T @ (share[i] * force)
+        jp, jr = jacs[i][0][:, leg], jacs[i][1][:, leg]
+        if wrench is None:
+          tau = bias[leg] - jp.T @ (share[i] * force)
+        else:
+          tau = bias[leg] - jp.T @ wrench[3 * i : 3 * i + 3] - jr.T @ wrench[6 + 3 * i : 9 + 3 * i]
         out[5 * i : 5 * i + 5] += self.g.load * tau / self.kp[5 * i : 5 * i + 5]
     return out

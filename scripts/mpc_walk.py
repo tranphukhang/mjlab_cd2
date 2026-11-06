@@ -1,9 +1,11 @@
 """Run a model-based walking controller on Open Duck in plain MuJoCo.
 
 Controllers:
-  zmp   LIPM-ZMP MPC + whole-body IK, joint position targets (default; the
-        same interface as the real servos)
-  srbd  single-rigid-body force MPC in torque mode (needs --armature 0.002)
+  zmp       LIPM-ZMP MPC + capture point + whole-body IK, joint position
+            targets (default; the same interface as the real servos)
+  zmp_srbd  the zmp plan (footholds, swing, CoM) tracked by an SRBD force MPC;
+            its ground forces reach the servos as target offsets tau / kp
+  srbd      single-rigid-body force MPC in torque mode (needs --armature 0.002)
 
 Phases: stand still, step in place, then walk at ``--vx``. Prints tracking and
 stability metrics, and optionally records a video or opens the MuJoCo viewer.
@@ -14,6 +16,7 @@ servo bus and IMU.
 
   pixi run python scripts/mpc_walk.py --latency 0.02 --gyro-noise 0.05 --duration 60
   pixi run python scripts/mpc_walk.py --video videos/mpc_walk.mp4
+  pixi run python scripts/mpc_walk.py --controller zmp_srbd --latency 0.03 --gyro-noise 0.05
   pixi run python scripts/mpc_walk.py --viewer
 """
 
@@ -27,6 +30,8 @@ import mujoco.viewer
 import numpy as np
 
 from open_duck_mjlab.mpc.controller import Command, MpcWalkingController
+from open_duck_mjlab.mpc.srbd_mpc import MpcParams
+from open_duck_mjlab.mpc.srbd_tracker import TRACK_Q, TRACK_R, SrbdTracker
 from open_duck_mjlab.mpc.walk_feedback import BalanceFeedback, ComEstimator, FeedbackGains
 from open_duck_mjlab.mpc.zmp_walker import WalkParams, ZmpWalker
 from open_duck_mjlab.open_duck.open_duck_constants import (
@@ -89,6 +94,8 @@ class ZmpController:
     estimator: str = "kin",
     gyro_noise: float = 0.0,
     seed: int = 0,
+    srbd: MpcParams | None = None,
+    srbd_mix: float = 1.0,
   ):
     self.m = m
     self.walker = ZmpWalker(m, params)
@@ -106,6 +113,8 @@ class ZmpController:
     self.ctrl = d.ctrl.copy()
     self.last_solve_ms = 0.0
     self.base = m.body("base_link").id
+    self.tracker = SrbdTracker(w, srbd) if srbd is not None else None
+    self.srbd_mix = srbd_mix
 
   def compute(self, d: mujoco.MjData, t: float, cmd: Command) -> np.ndarray:
     if t >= self.next_t - 1e-9:
@@ -123,8 +132,12 @@ class ZmpController:
         t, cmd.vx, cmd.vy, walk=not cmd.stand, com_meas=com, vcom_meas=vcom, feet_meas=feet
       )
       dbg = w.debug
+      wrench = None
+      if self.tracker is not None:
+        wrench = self.tracker.solve(t, d.qpos[3:7].copy(), gyro, com, vcom)
+        wrench = self.tracker.u_ref0 + self.srbd_mix * (wrench - self.tracker.u_ref0)
       q = q + self.feedback.offsets(
-        w.ik_data, w.contact, gyro, dbg["com_acc"], dbg["zmp"], dbg["feet"]
+        w.ik_data, w.contact, gyro, dbg["com_acc"], dbg["zmp"], dbg["feet"], wrench
       )
       self.ctrl = q
       self.last_solve_ms = 1e3 * (time.perf_counter() - tic)
@@ -186,7 +199,11 @@ def main() -> None:
   ap.add_argument("--video", type=str, default="")
   ap.add_argument("--viewer", action="store_true")
   ap.add_argument("--settle", type=float, default=0.3, help="position-hold before the controller")
-  ap.add_argument("--controller", choices=("zmp", "srbd"), default="zmp")
+  ap.add_argument("--controller", choices=("zmp", "zmp_srbd", "srbd"), default="zmp")
+  ap.add_argument("--srbd-q", default="", help="13 comma-separated SRBD Q weights (zmp_srbd)")
+  ap.add_argument("--srbd-r", type=float, nargs=2, default=TRACK_R, metavar=("FORCE", "MOMENT"))
+  ap.add_argument("--srbd-horizon", type=int, default=10)
+  ap.add_argument("--srbd-mix", type=float, default=1.0, help="0 = plan forces only, 1 = SRBD forces")
   ap.add_argument("--period", type=float, default=WalkParams.period)
   ap.add_argument("--swing-height", type=float, default=WalkParams.swing_height)
   ap.add_argument("--double-support", type=float, default=WalkParams.double_support)
@@ -208,7 +225,7 @@ def main() -> None:
     m.dof_armature[6:] = args.armature
   d = mujoco.MjData(m)
   if args.pose is None:
-    args.pose = "crouch10" if args.controller == "zmp" else "home"
+    args.pose = "home" if args.controller == "srbd" else "crouch10"
   reset(m, d, args.pose)
   base = m.body("base_link").id
   dt = m.opt.timestep
@@ -217,7 +234,7 @@ def main() -> None:
   for _ in range(int(args.settle / dt)):
     mujoco.mj_step(m, d)
   t0 = d.time
-  if args.controller == "zmp":
+  if args.controller in ("zmp", "zmp_srbd"):
     params = WalkParams(
       period=args.period,
       swing_height=args.swing_height,
@@ -228,7 +245,15 @@ def main() -> None:
       reanchor_x=args.reanchor_x,
     )
     gains = FeedbackGains(gyro=tuple(args.gyro), load=args.load)
-    ctrl = ZmpController(m, d, params, gains, args.estimator, args.gyro_noise)
+    srbd = None
+    if args.controller == "zmp_srbd":
+      qw = tuple(float(x) for x in args.srbd_q.split(",")) if args.srbd_q else TRACK_Q
+      srbd = MpcParams(
+        q_weights=qw, r_force=args.srbd_r[0], r_moment=args.srbd_r[1], horizon=args.srbd_horizon
+      )
+    ctrl = ZmpController(
+      m, d, params, gains, args.estimator, args.gyro_noise, srbd=srbd, srbd_mix=args.srbd_mix
+    )
   else:
     ctrl = MpcWalkingController(m)
 
@@ -286,7 +311,7 @@ def main() -> None:
       log["yaw"].append(yaw)
       log["x"].append(d.subtree_com[base][0])
       log["foot_z"].append([d.site_xpos[i][2] for i in foot_sites] - foot_z0)
-      log["solve_ms"].append(ctrl.last_solve_ms if args.controller == "zmp" else ctrl.mpc.last_solve_ms)
+      log["solve_ms"].append(ctrl.last_solve_ms if args.controller != "srbd" else ctrl.mpc.last_solve_ms)
       if fell is None and (d.xpos[base][2] < 0.12 or abs(s["rpy"][0]) > 0.7 or abs(s["rpy"][1]) > 0.7):
         fell = t
         print(f"FELL at t={t:.2f}s (base z {d.xpos[base][2]:.3f}, rpy {np.round(s['rpy'], 2)})")
@@ -308,6 +333,7 @@ def main() -> None:
   print(f"CoM height mean {arr['z'].mean():.3f} m (min {arr['z'].min():.3f})")
   print(f"roll |max| {np.degrees(np.abs(arr['roll']).max()):.1f} deg, pitch |max| {np.degrees(np.abs(arr['pitch']).max()):.1f} deg")
   if walk.any():
+    print(f"walking: roll rms {np.degrees(np.std(arr['roll'][walk])):.1f} deg, pitch rms {np.degrees(np.std(arr['pitch'][walk])):.1f} deg")
     err = arr["vx"][walk] - arr["vx_cmd"][walk]
     print(f"walking: vx mean {arr['vx'][walk].mean():.3f} (cmd {arr['vx_cmd'][walk].mean():.3f}), |err| mean {np.abs(err).mean():.3f} m/s")
     print(f"yaw drift {np.degrees(arr['yaw'][walk][-1] - arr['yaw'][walk][0]):.1f} deg over {arr['t'][walk][-1] - arr['t'][walk][0]:.1f}s")

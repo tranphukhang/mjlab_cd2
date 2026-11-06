@@ -134,6 +134,8 @@ class ZmpWalker:
     self.vy = 0.0
     self.contact = np.array([True, True])
     self.debug: dict = {}
+    self.last_plan: _Plan | None = None
+    self.plan_states = np.zeros((2, 0, 3))  # per axis, CoM (pos, vel, acc) at t + (k+1) dt
 
   # ------------------------------------------------------------------ setup
   def reset(self, d: mujoco.MjData) -> None:
@@ -351,6 +353,7 @@ class ZmpWalker:
     plan = self._plan(t, self.mpc_params.horizon)
     vel_ref = (self.vx, self.vy)
     status = []
+    self.plan_states = np.zeros((2, len(plan.zref), 3))
     for ax in range(2):
       _, states = self.mpc[ax].solve(
         self.com_state[ax],
@@ -360,7 +363,9 @@ class ZmpWalker:
         np.full(len(plan.zref), vel_ref[ax]),
       )
       self.com_state[ax] = states[0]
+      self.plan_states[ax] = states
       status.append(self.mpc[ax].last_status)
+    self.last_plan = plan
     rise = _smoothstep((t - self.t_first) / self.p.com_raise_time)
     com = np.array([*self.com_state[:, 0], self.com_height + rise * self.p.com_raise])
     com[:2] -= np.asarray(self.p.dcm_gain) * dcm_err
@@ -372,6 +377,33 @@ class ZmpWalker:
       feet=feet, status=status, dcm_err=dcm_err, com_acc=self.com_state[:, 2].copy(),
     )
     return q
+
+  def schedule(self, t: float, n: int) -> tuple[np.ndarray, np.ndarray]:
+    """Planned contacts (n, 2) and foot positions (n, 2, 3) at t + k dt.
+
+    Uses the footsteps of the last ``step`` call. A swinging foot is given
+    its landing point (it carries no force while it swings).
+    """
+    assert self.last_plan is not None, "call step() first"
+    feet = self.last_plan.feet
+    ds = self.p.double_support * self.p.period
+    contact = np.ones((n, 2), dtype=bool)
+    pos = np.zeros((n, 2, 3))
+    for k in range(n):
+      j, local = self._phase(t + k * self.dt)
+      if j < 0:
+        pos[k] = self.feet0
+        continue
+      j = min(j, len(feet[0]) - 2)
+      stance = self._stance(j)
+      swing = 1 - stance
+      pos[k, stance] = feet[stance][j]
+      if local < ds:
+        pos[k, swing] = feet[swing][j]
+      else:
+        contact[k, swing] = False
+        pos[k, swing] = feet[swing][j + 1]
+    return contact, pos
 
   # -------------------------------------------------------------------- IK
   def _ik(self, com: np.ndarray, feet: np.ndarray) -> np.ndarray:
