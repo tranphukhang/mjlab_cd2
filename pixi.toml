@@ -11,6 +11,7 @@ python = "3.12.*"
 torch = { version = ">=2.7,<2.10", index = "https://download.pytorch.org/whl/cu128" }
 # Installs this package in editable mode, which pulls in mjlab>=1.6,<1.7.
 open-duck-mjlab = { path = ".", editable = true }
+osqp = ">=1.0"
 
 [tasks]
 check = "python -c \"import torch, mjlab, open_duck_mjlab; print('torch', torch.__version__, 'cuda', torch.cuda.is_available(), torch.cuda.get_device_name(0) if torch.cuda.is_available() else '')\""
